@@ -14,8 +14,8 @@ This project was developed by the [Mahmood Lab](https://faisal.ai/) at Harvard M
 <img align="right" src="_readme/trident_crop.jpg" width="250px" />
 
 - **End-to-end pipeline**: tissue segmentation → patch coordinates → patch / slide embeddings, in one command (`--task all`) or stage-by-stage.
-- **22+ patch encoders**: [UNI](https://www.nature.com/articles/s41591-024-02857-3), [CONCHv1.5](https://huggingface.co/MahmoodLab/conchv1_5), [Virchow](https://www.nature.com/articles/s41591-024-03141-0), Prov-GigaPath, [H-Optimus-0](https://github.com/bioptimus/releases/tree/main/models/h-optimus/v0), etc.
-- **Slide encoders**: [Titan](https://arxiv.org/abs/2411.19666), [GigaPath](https://www.nature.com/articles/s41586-024-07441-w), PRISM, CHIEF, Madeleine, Feather.
+- **33 patch encoders**: [UNI](https://www.nature.com/articles/s41591-024-02857-3), [CONCHv1.5](https://huggingface.co/MahmoodLab/conchv1_5), [Virchow](https://www.nature.com/articles/s41591-024-03141-0), [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), [H-Optimus-0](https://github.com/bioptimus/releases/tree/main/models/h-optimus/v0), etc.
+- **Slide encoders**: [Titan](https://arxiv.org/abs/2411.19666), [GigaPath](https://www.nature.com/articles/s41586-024-07441-w), [PRISM](https://huggingface.co/paige-ai/Prism), [CHIEF](https://github.com/hms-dbmi/CHIEF), [Madeleine](https://huggingface.co/MahmoodLab/madeleine), [Feather](https://huggingface.co/MahmoodLab/abmil.base.conch_v15.pc108-24k).
 - **Tissue segmentation**: [HEST](https://huggingface.co/MahmoodLab/hest-tissue-seg), [GrandQC](https://github.com/cpath-ukk/grandqc), or **Otsu** for CPU-only runs. Optional `--remove_artifacts` / `--remove_penmarks` clean-up pass.
 - **Multiple WSI readers**: OpenSlide, CuCIM, plain images (`.png`, `.jpeg`), SDPC, OME-Zarr (`.zarr`), Zeiss CZI (`.czi`). Or convert to pyramidal TIFF with `trident convert`.
 - **Multi-GPU**: `--gpus 0 1 2 3` distributes pending slides across GPUs.
@@ -28,7 +28,7 @@ This project was developed by the [Mahmood Lab](https://faisal.ai/) at Harvard M
 - Create an environment (Python 3.10 or 3.11): `conda create -n "trident" python=3.10`, and activate it `conda activate trident`.
 - Cloning: `git clone https://github.com/mahmoodlab/trident.git && cd trident`.
 - Local installation: `pip install -e .`.
-  - This installs the shared model stack (`transformers`, `timm`, `safetensors`, etc.).
+  - This installs the shared model stack (`timm>=0.9.16,<2`, `transformers>=4.51,<5`, `safetensors`, etc.).
 
 Optional install profiles:
 - `pip install -e ".[patch-encoders]"` for patch embedding-related extras (e.g. [CONCH](https://huggingface.co/MahmoodLab/CONCH), [MUSK](https://huggingface.co/xiangjx/musk), [CTransPath / CHIEF](https://github.com/hms-dbmi/CHIEF)).
@@ -90,6 +90,14 @@ If embedded MPP metadata is detected in a slide, Trident compares it to the CSV 
    - WSI thumbnails with tissue contours in `./trident_processed/contours`.
    - GeoJSON files containing tissue contours in `./trident_processed/contours_geojson`. These can be opened in [QuPath](https://qupath.github.io/) for editing/quality control, if necessary.
 
+🔒 gated on HuggingFace (accept the terms while logged in; some need manual approval) · 🌐 open download. Licenses are those declared by the model host — check them before any commercial use.
+
+| Segmenter | Args | Link | License |
+|-----------|------|------|---------|
+| **HEST** (default) | `--segmenter hest` | [MahmoodLab/hest-tissue-seg](https://huggingface.co/MahmoodLab/hest-tissue-seg) | 🌐 [CC-BY-NC-SA-4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) |
+| **GrandQC** | `--segmenter grandqc` | [cpath-ukk/grandqc](https://github.com/cpath-ukk/grandqc) | 🌐 [CC-BY-NC-SA-4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) |
+| **Otsu** | `--segmenter otsu` | — | — (classical, no model) |
+
  **Step 2: Tissue Patching:** Extracts patches from segmented tissue regions at a specific magnification.
  - **Command**:
    ```bash
@@ -119,34 +127,42 @@ If embedded MPP metadata is detected in a slide, Trident compares it to the CSV 
  - **Outputs**: 
    - Features are saved as h5 files in `./trident_processed/20x_256px_0px_overlap/features_uni_v1`. (Shape: `(n_patches, feature_dim)`)
 
-Trident supports 24 patch encoders, loaded via a patch [`encoder_factory`](https://github.com/mahmoodlab/trident/blob/main/trident/patch_encoder_models/load.py#L14). Models requiring specific installations will return error messages with additional instructions. Gated models on HuggingFace require access requests.
+Trident supports 33 patch encoders, loaded via a patch [`encoder_factory`](https://github.com/mahmoodlab/trident/blob/main/trident/patch_encoder_models/load.py#L14). Models requiring specific installations will return error messages with additional instructions. Gated models on HuggingFace require access requests.
 
-| Patch Encoder         | Embedding Dim | Args                                                             | Link |
-|-----------------------|---------------:|------------------------------------------------------------------|------|
-| **UNI**               | 1024           | `--patch_encoder uni_v1 --patch_size 256 --mag 20`               | [MahmoodLab/UNI](https://huggingface.co/MahmoodLab/UNI) |
-| **UNI2-h**             | 1536           | `--patch_encoder uni_v2 --patch_size 256 --mag 20`               | [MahmoodLab/UNI2-h](https://huggingface.co/MahmoodLab/UNI2-h) |
-| **CONCH**             | 512            | `--patch_encoder conch_v1 --patch_size 512 --mag 20`             | [MahmoodLab/CONCH](https://huggingface.co/MahmoodLab/CONCH) |
-| **CONCHv1.5**         | 768            | `--patch_encoder conch_v15 --patch_size 512 --mag 20`            | [MahmoodLab/conchv1_5](https://huggingface.co/MahmoodLab/conchv1_5) |
-| **Virchow**           | 2560           | `--patch_encoder virchow --patch_size 224 --mag 20`              | [paige-ai/Virchow](https://huggingface.co/paige-ai/Virchow) |
-| **Virchow2**          | 2560           | `--patch_encoder virchow2 --patch_size 224 --mag 20`             | [paige-ai/Virchow2](https://huggingface.co/paige-ai/Virchow2) |
-| **Phikon**            | 768            | `--patch_encoder phikon --patch_size 224 --mag 20`               | [owkin/phikon](https://huggingface.co/owkin/phikon) |
-| **Phikon-v2**         | 1024           | `--patch_encoder phikon_v2 --patch_size 224 --mag 20`            | [owkin/phikon-v2](https://huggingface.co/owkin/phikon-v2/) |
-| **KEEP**              | 768            | `--patch_encoder keep --patch_size 256 --mag 20`                 | [Astaxanthin/KEEP](https://huggingface.co/Astaxanthin/KEEP) |
-| **Prov-Gigapath**     | 1536           | `--patch_encoder gigapath --patch_size 256 --mag 20`             | [prov-gigapath](https://huggingface.co/prov-gigapath/prov-gigapath) |
-| **H-Optimus-0**       | 1536           | `--patch_encoder hoptimus0 --patch_size 224 --mag 20`            | [bioptimus/H-optimus-0](https://huggingface.co/bioptimus/H-optimus-0) |
-| **H-Optimus-1**       | 1536           | `--patch_encoder hoptimus1 --patch_size 224 --mag 20`            | [bioptimus/H-optimus-1](https://huggingface.co/bioptimus/H-optimus-1) |
-| **H0-mini**           | 768/1536       | `--patch_encoder h0-mini --patch_size 224 --mag 20`              | [bioptimus/H0-mini](https://huggingface.co/bioptimus/H0-mini) |
-| **MUSK**              | 1024           | `--patch_encoder musk --patch_size 384 --mag 20`                 | [xiangjx/musk](https://huggingface.co/xiangjx/musk) |
-| **Midnight-12k**      | 3072           | `--patch_encoder midnight12k --patch_size 224 --mag 20`          | [kaiko-ai/midnight](https://huggingface.co/kaiko-ai/midnight) |
-| **OpenMidnight**      | 1536           | `--patch_encoder openmidnight --patch_size 224 --mag 20`         | [SophontAI/OpenMidnight](https://huggingface.co/SophontAI/OpenMidnight) |
-| **GPFM**              | 1024           | `--patch_encoder gpfm --patch_size 224 --mag 20`                 | [majiabo/GPFM](https://huggingface.co/majiabo/GPFM) |
-| **GenBio-PathFM**     | 4608           | `--patch_encoder genbio-pathfm --patch_size 224 --mag 20`        | [genbio-ai/genbio-pathfm](https://huggingface.co/genbio-ai/genbio-pathfm) |
-| **Gemma 4**           | 768/1152       | `--patch_encoder {gemma4-e4b, gemma4-26b} --patch_size 224 --mag 20` | [google/gemma-4-E4B](https://huggingface.co/google/gemma-4-E4B) / [google/gemma-4-26B-A4B](https://huggingface.co/google/gemma-4-26B-A4B) |
-| **Kaiko**             | 384/768/1024   | `--patch_encoder {kaiko-vits8, kaiko-vits16, kaiko-vitb8, kaiko-vitb16, kaiko-vitl14} --patch_size 256 --mag 20` | [1aurent/kaikoai-models-66636c99d8e1e34bc6dcf795](https://huggingface.co/collections/1aurent/kaikoai-models-66636c99d8e1e34bc6dcf795) |
-| **Lunit**             | 384            | `--patch_encoder lunit-vits8 --patch_size 224 --mag 20`          | [1aurent/vit_small_patch8_224.lunit_dino](https://huggingface.co/1aurent/vit_small_patch8_224.lunit_dino) |
-| **Hibou**             | 1024           | `--patch_encoder hibou_l --patch_size 224 --mag 20`              | [histai/hibou-L](https://huggingface.co/histai/hibou-L) |
-| **CTransPath-CHIEF**  | 768            | `--patch_encoder ctranspath --patch_size 256 --mag 10`           | — |
-| **ResNet50**          | 1024           | `--patch_encoder resnet50 --patch_size 256 --mag 20`             | — |
+🔒 gated on HuggingFace (accept the terms while logged in; some need manual approval) · 🌐 open download. Licenses are those declared by the model host — check them before any commercial use.
+
+| Patch Encoder         | Embedding Dim | Args                                                             | Link | License |
+|-----------------------|---------------:|------------------------------------------------------------------|------|---------|
+| **UNI**               | 1024           | `--patch_encoder uni_v1 --patch_size 256 --mag 20`               | [MahmoodLab/UNI](https://huggingface.co/MahmoodLab/UNI) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **UNI2-h**             | 1536           | `--patch_encoder uni_v2 --patch_size 256 --mag 20`               | [MahmoodLab/UNI2-h](https://huggingface.co/MahmoodLab/UNI2-h) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **CONCH**             | 512            | `--patch_encoder conch_v1 --patch_size 512 --mag 20`             | [MahmoodLab/CONCH](https://huggingface.co/MahmoodLab/CONCH) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **CONCHv1.5**         | 768            | `--patch_encoder conch_v15 --patch_size 512 --mag 20`            | [MahmoodLab/conchv1_5](https://huggingface.co/MahmoodLab/conchv1_5) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **Virchow**           | 2560           | `--patch_encoder virchow --patch_size 224 --mag 20`              | [paige-ai/Virchow](https://huggingface.co/paige-ai/Virchow) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **Virchow2**          | 2560           | `--patch_encoder virchow2 --patch_size 224 --mag 20`             | [paige-ai/Virchow2](https://huggingface.co/paige-ai/Virchow2) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **Virchow2 (CLS)**    | 1280           | `--patch_encoder virchow2-cls --patch_size 224 --mag 20`         | [paige-ai/Virchow2](https://huggingface.co/paige-ai/Virchow2) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **Phikon**            | 768            | `--patch_encoder phikon --patch_size 224 --mag 20`               | [owkin/phikon](https://huggingface.co/owkin/phikon) | 🌐 [Owkin non-commercial](https://github.com/owkin/HistoSSLscaling/blob/main/LICENSE.txt) |
+| **Phikon-v2**         | 1024           | `--patch_encoder phikon_v2 --patch_size 224 --mag 20`            | [owkin/phikon-v2](https://huggingface.co/owkin/phikon-v2/) | 🌐 [Owkin non-commercial](https://huggingface.co/owkin/phikon-v2/blob/main/LICENSE.pdf) |
+| **KEEP**              | 768            | `--patch_encoder keep --patch_size 256 --mag 20`                 | [Astaxanthin/KEEP](https://huggingface.co/Astaxanthin/KEEP) | 🌐 [MIT](https://opensource.org/license/mit) |
+| **Prov-Gigapath**     | 1536           | `--patch_encoder gigapath --patch_size 256 --mag 20`             | [prov-gigapath](https://huggingface.co/prov-gigapath/prov-gigapath) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **Prov-Gigapath-Flash** | 384          | `--patch_encoder gigapath-flash --patch_size 256 --mag 20`       | [prov-gigapath-flash](https://huggingface.co/prov-gigapath/prov-gigapath-flash) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **H-Optimus-0**       | 1536           | `--patch_encoder hoptimus0 --patch_size 224 --mag 20`            | [bioptimus/H-optimus-0](https://huggingface.co/bioptimus/H-optimus-0) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **H-Optimus-1**       | 1536           | `--patch_encoder hoptimus1 --patch_size 224 --mag 20`            | [bioptimus/H-optimus-1](https://huggingface.co/bioptimus/H-optimus-1) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **H0-mini**           | 768/1536       | `--patch_encoder h0-mini --patch_size 224 --mag 20`              | [bioptimus/H0-mini](https://huggingface.co/bioptimus/H0-mini) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **MUSK**              | 1024           | `--patch_encoder musk --patch_size 384 --mag 20`                 | [xiangjx/musk](https://huggingface.co/xiangjx/musk) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **Midnight-12k**      | 3072           | `--patch_encoder midnight12k --patch_size 224 --mag 20`          | [kaiko-ai/midnight](https://huggingface.co/kaiko-ai/midnight) | 🌐 [MIT](https://opensource.org/license/mit) |
+| **Phaet**             | 1024           | `--patch_encoder phaet --patch_size 224 --mag 20`                | [wearewaiv/phaet](https://huggingface.co/wearewaiv/phaet) | 🔒 [Waiv non-commercial](https://huggingface.co/wearewaiv/phaet/blob/main/LICENSE.pdf) |
+| **Mascaret**          | 1536/3072      | `--patch_encoder mascaret --patch_size 224 --mag 20`             | [wearewaiv/mascaret](https://huggingface.co/wearewaiv/mascaret) | 🔒 [Waiv non-commercial](https://huggingface.co/wearewaiv/mascaret/blob/main/LICENSE.pdf) |
+| **OpenMidnight**      | 1536           | `--patch_encoder openmidnight --patch_size 224 --mag 20`         | [SophontAI/OpenMidnight](https://huggingface.co/SophontAI/OpenMidnight) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **GPFM**              | 1024           | `--patch_encoder gpfm --patch_size 224 --mag 20`                 | [majiabo/GPFM](https://huggingface.co/majiabo/GPFM) | 🌐 [MIT](https://opensource.org/license/mit) |
+| **GenBio-PathFM**     | 4608           | `--patch_encoder genbio-pathfm --patch_size 224 --mag 20`        | [genbio-ai/genbio-pathfm](https://huggingface.co/genbio-ai/genbio-pathfm) | 🌐 [GenBio AI Community](https://huggingface.co/genbio-ai/genbio-pathfm/blob/main/LICENSE.txt) |
+| **Gemma 4** ¹         | 768/1152       | `--patch_encoder {gemma4-e4b, gemma4-26b} --patch_size 224 --mag 20` | [google/gemma-4-E4B](https://huggingface.co/google/gemma-4-E4B) / [google/gemma-4-26B-A4B](https://huggingface.co/google/gemma-4-26B-A4B) | 🌐 [Gemma Terms](https://ai.google.dev/gemma/docs/gemma_4_license) |
+| **Kaiko**             | 384/768/1024   | `--patch_encoder {kaiko-vits8, kaiko-vits16, kaiko-vitb8, kaiko-vitb16, kaiko-vitl14} --patch_size 256 --mag 20` | [1aurent/kaikoai-models-66636c99d8e1e34bc6dcf795](https://huggingface.co/collections/1aurent/kaikoai-models-66636c99d8e1e34bc6dcf795) | 🌐 [Kaiko non-commercial](https://github.com/kaiko-ai/towards_large_pathology_fms/blob/main/LICENSE) |
+| **Lunit**             | 384            | `--patch_encoder lunit-vits8 --patch_size 224 --mag 20`          | [1aurent/vit_small_patch8_224.lunit_dino](https://huggingface.co/1aurent/vit_small_patch8_224.lunit_dino) | 🌐 [Lunit non-commercial](https://huggingface.co/1aurent/vit_small_patch8_224.lunit_dino) |
+| **Hibou**             | 1024           | `--patch_encoder hibou_l --patch_size 224 --mag 20`              | [histai/hibou-L](https://huggingface.co/histai/hibou-L) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **CTransPath-CHIEF**  | 768            | `--patch_encoder ctranspath --patch_size 256 --mag 10`           | — | 🌐 [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) |
+| **ResNet50**          | 1024           | `--patch_encoder resnet50 --patch_size 256 --mag 20`             | — | 🌐 [BSD-3-Clause](https://opensource.org/license/bsd-3-clause) |
+
+¹ Gemma 4 requires `transformers>=5`, which is incompatible with `hibou_l`. Use a separate environment.
 
 **Step 3b: Slide Feature Extraction:** Extracts slide embeddings using a slide encoder. Will also automatically extract the right patch embeddings. 
  - **Command**:
@@ -162,19 +178,25 @@ Trident supports 24 patch encoders, loaded via a patch [`encoder_factory`](https
  - **Outputs**: 
    - Features are saved as h5 files in `./trident_processed/20x_512px_0px_overlap/slide_features_titan`. (Shape: `(feature_dim)`)
 
-Trident supports 5 slide encoders, loaded via a slide-level [`encoder_factory`](https://github.com/mahmoodlab/trident/blob/main/trident/slide_encoder_models/load.py#L14). Models requiring specific installations will return error messages with additional instructions. Gated models on HuggingFace require access requests.
+Trident supports 12 slide encoders, loaded via a slide-level [`encoder_factory`](https://github.com/mahmoodlab/trident/blob/main/trident/slide_encoder_models/load.py#L14). Models requiring specific installations will return error messages with additional instructions. Gated models on HuggingFace require access requests.
 
-| Slide Encoder | Patch Encoder | Args | Link |
-|---------------|----------------|------|------|
-| **Threads** | conch_v15 | `--slide_encoder threads --patch_size 512 --mag 20` | *(Coming Soon!)* |
-| **Titan** | conch_v15 | `--slide_encoder titan --patch_size 512 --mag 20` | [MahmoodLab/TITAN](https://huggingface.co/MahmoodLab/TITAN) |
-| **PRISM** | virchow | `--slide_encoder prism --patch_size 224 --mag 20` | [paige-ai/Prism](https://huggingface.co/paige-ai/Prism) |
-| **CHIEF** | ctranspath | `--slide_encoder chief --patch_size 256 --mag 10` | [CHIEF](https://github.com/hms-dbmi/CHIEF) |
-| **GigaPath** | gigapath | `--slide_encoder gigapath --patch_size 256 --mag 20` | [prov-gigapath](https://huggingface.co/prov-gigapath/prov-gigapath) |
-| **Madeleine** | conch_v1 | `--slide_encoder madeleine --patch_size 256 --mag 10` | [MahmoodLab/madeleine](https://huggingface.co/MahmoodLab/madeleine) |
-| **Feather** | conch_v15 | `--slide_encoder feather --patch_size 512 --mag 20` | [MahmoodLab/FEATHER](https://huggingface.co/MahmoodLab/abmil.base.conch_v15.pc108-24k) |
-| **Feather-UNI2** | uni_v2 | `--slide_encoder feather_uni_v2 --patch_size 256 --mag 20` | [MahmoodLab/FEATHER](https://huggingface.co/MahmoodLab/abmil.base.uni_v2.pc108-24k) |
-| **CARE** | conch_v15 | `--slide_encoder care --patch_size 512 --mag 20` | [Zipper-1/CARE](https://huggingface.co/Zipper-1/CARE) |
+| Slide Encoder | Patch Encoder | Args | Link | License |
+|---------------|----------------|------|------|---------|
+| **Threads** | conch_v15 | `--slide_encoder threads --patch_size 512 --mag 20` | *(Coming Soon!)* | — |
+| **Titan** | conch_v15 | `--slide_encoder titan --patch_size 512 --mag 20` | [MahmoodLab/TITAN](https://huggingface.co/MahmoodLab/TITAN) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **PRISM** | virchow | `--slide_encoder prism --patch_size 224 --mag 20` | [paige-ai/Prism](https://huggingface.co/paige-ai/Prism) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **PRISM2** | virchow2-cls | `--slide_encoder prism2 --patch_size 224 --mag 20` | [paige-ai/Prism2](https://huggingface.co/paige-ai/Prism2) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **CHIEF** | ctranspath | `--slide_encoder chief --patch_size 256 --mag 10` | [CHIEF](https://github.com/hms-dbmi/CHIEF) | 🌐 [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) |
+| **GigaPath** | gigapath | `--slide_encoder gigapath --patch_size 256 --mag 20` | [prov-gigapath](https://huggingface.co/prov-gigapath/prov-gigapath) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **GigaPath-Flash** | gigapath-flash | `--slide_encoder gigapath-flash --patch_size 256 --mag 20` | [prov-gigapath-flash](https://huggingface.co/prov-gigapath/prov-gigapath-flash) | 🔒 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| **Madeleine** | conch_v1 | `--slide_encoder madeleine --patch_size 256 --mag 10` | [MahmoodLab/madeleine](https://huggingface.co/MahmoodLab/madeleine) | 🔒 [MIT](https://opensource.org/license/mit) |
+| **Feather** | conch_v15 | `--slide_encoder feather --patch_size 512 --mag 20` | [MahmoodLab/FEATHER](https://huggingface.co/MahmoodLab/abmil.base.conch_v15.pc108-24k) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **Feather-UNI2** | uni_v2 | `--slide_encoder feather_uni_v2 --patch_size 256 --mag 20` | [MahmoodLab/FEATHER](https://huggingface.co/MahmoodLab/abmil.base.uni_v2.pc108-24k) | 🔒 [CC-BY-NC-ND-4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) |
+| **CARE** | conch_v15 | `--slide_encoder care --patch_size 512 --mag 20` | [Zipper-1/CARE](https://huggingface.co/Zipper-1/CARE) | 🔒 [CC-BY-NC-4.0](https://creativecommons.org/licenses/by-nc/4.0/) |
+| **ABMIL** | any | Python API only — untrained aggregator, see note below | — | — |
+
+> [!NOTE]
+> **ABMIL** is an untrained attention-pooling aggregator, not a pretrained encoder. It is only usable from the Python API with explicit hyperparameters (`encoder_factory('abmil', pretrained=False, input_feature_dim=768, n_heads=1, head_dim=64, dropout=0.1, gated=True)`); `--slide_encoder abmil` raises a `TypeError`.
 
 > [!NOTE]
 > If your task includes multiple slides per patient, you can generate patient-level embeddings by: (1) processing each slide independently and taking their average slide embedding (late fusion) or (2) pooling all patches together and processing that as a single "pseudo-slide" (early fusion). For an implementation of both fusion strategies, please check out our sister repository [Patho-Bench](https://github.com/mahmoodlab/Patho-Bench).
@@ -191,7 +213,11 @@ Please see our [tutorials](https://github.com/mahmoodlab/trident/tree/main/tutor
    - **A**: In `run_batch_of_slides`, this behavior is default. Set `--remove_holes` to exclude patches on top of holes.
 
 - **Q**: I see weird messages when building models using timm. What is happening?
-   - **A**: Make sure `timm==0.9.16` is installed. `timm==1.X.X` creates issues with most models. 
+   - **A**: Check your version. Trident needs `timm>=0.9.16,<2`.
+
+- **Q**: `gigapath`, `gigapath-flash` or `prism2` fails with a FlashAttention error. What do I do?
+   - **A**: On Blackwell GPUs you need `flash-attn>=2.7.3`. Grab a prebuilt wheel from its
+     [releases](https://github.com/Dao-AILab/flash-attention/releases) — PyPI ships only an sdist.
 
 - **Q**: What’s the recommended way to run Trident from another project?
   - **A**: Use the **CLI** (recommended for reproducibility). Install Trident, then call:

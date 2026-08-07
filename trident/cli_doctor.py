@@ -79,10 +79,23 @@ def _check_hf_repo_access(model_name: str, repo_id: str, repo_type: Optional[str
         )
 
     try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
         if repo_type == "dataset":
-            HfApi().dataset_info(repo_id=repo_id)
+            info = HfApi().dataset_info(repo_id=repo_id)
         else:
-            HfApi().model_info(repo_id=repo_id)
+            info = HfApi().model_info(repo_id=repo_id)
+
+        # `*_info` returns metadata for gated repos even without access, so it only proves the repo
+        # exists. Confirm the files are actually readable with a HEAD request on one of them.
+        if getattr(info, "gated", False):
+            siblings = [s.rfilename for s in (info.siblings or [])]
+            probe = next(
+                (f for f in ("config.json", ".gitattributes", "README.md") if f in siblings),
+                siblings[0] if siblings else None,
+            )
+            if probe is not None:
+                get_hf_file_metadata(hf_hub_url(repo_id, probe, repo_type=repo_type))
         return CheckResult("PASS", f"{model_name} gated access", f"Access check succeeded for `{repo_id}`.")
     except GatedRepoError:
         return CheckResult(
@@ -98,6 +111,46 @@ def _check_hf_repo_access(model_name: str, repo_id: str, repo_type: Optional[str
             f"Could not verify access ({type(exc).__name__}).",
             "Check internet connectivity, then rerun `trident-doctor --check-gated`.",
         )
+
+
+def _check_flash_attn_gpu() -> CheckResult:
+    """
+    flash-attn is only usable if it was compiled for the current GPU's SM architecture.
+    Releases before 2.7.3 stop at sm_90, so on Blackwell (sm_100/sm_120) the LongNet-based slide
+    encoders fail at their first attention call rather than at import time.
+    """
+    name = "flash-attn / GPU compatibility"
+    try:
+        from packaging.version import Version
+        import flash_attn
+    except Exception:
+        return CheckResult(
+            "WARN",
+            name,
+            "flash_attn is not installed; the GigaPath and PRISM2 slide encoders need it.",
+            "Install with: pip install 'flash_attn>=2.7.3'",
+        )
+
+    version = flash_attn.__version__
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return CheckResult("PASS", name, f"flash_attn {version} installed (no GPU to check against).")
+        major, minor = torch.cuda.get_device_capability()
+    except Exception:
+        return CheckResult("PASS", name, f"flash_attn {version} installed (GPU capability unknown).")
+
+    if major >= 10 and Version(version) < Version("2.7.3"):
+        return CheckResult(
+            "FAIL",
+            name,
+            f"flash_attn {version} has no kernels for this GPU (sm_{major}{minor}); "
+            "GigaPath/PRISM2 slide encoders will fail at runtime.",
+            f"Install flash_attn >= 2.7.3, e.g. FLASH_ATTN_CUDA_ARCHS={major}{minor} "
+            "pip install --no-build-isolation 'flash-attn>=2.7.3'",
+        )
+    return CheckResult("PASS", name, f"flash_attn {version} supports this GPU (sm_{major}{minor}).")
 
 
 def _check_chief_repo_root(repo_root: Path) -> CheckResult:
@@ -257,7 +310,10 @@ def run_checks(profile: str, check_gated: bool) -> List[CheckResult]:
         ("Phikon-v2", "owkin/phikon-v2", "model"),
         ("Hibou-L", "histai/hibou-L", "model"),
         ("Prov-GigaPath", "prov-gigapath/prov-gigapath", "model"),
+        ("Prov-GigaPath-Flash", "prov-gigapath/prov-gigapath-flash", "model"),
         ("Midnight", "kaiko-ai/midnight", "model"),
+        ("Phaet", "wearewaiv/phaet", "model"),
+        ("Mascaret", "wearewaiv/mascaret", "model"),
         ("OpenMidnight", "SophontAI/OpenMidnight", "model"),
         ("GPFM", "majiabo/GPFM", "model"),
         ("Lunit vits8", "1aurent/vit_small_patch8_224.lunit_dino", "model"),
@@ -272,6 +328,7 @@ def run_checks(profile: str, check_gated: bool) -> List[CheckResult]:
 
     slide_gated_repos = [
         ("PRISM", "paige-ai/Prism", "model"),
+        ("PRISM2", "paige-ai/Prism2", "model"),
         ("Titan", "MahmoodLab/TITAN", "model"),
         ("Feather", "MahmoodLab/abmil.base.conch_v15.pc108-24k", "model"),
     ]
@@ -306,7 +363,7 @@ def run_checks(profile: str, check_gated: bool) -> List[CheckResult]:
                 _check_module(
                     "environs",
                     "PRISM dependency",
-                    "Install with: pip install environs==11.0.0 transformers==4.42.4 sacremoses==0.1.1",
+                    "Install with: pip install environs==11.0.0 sacremoses==0.1.1 'transformers>=4.51,<5'",
                 ),
                 _check_module(
                     "gigapath",
@@ -319,6 +376,7 @@ def run_checks(profile: str, check_gated: bool) -> List[CheckResult]:
                     "Install with: pip install git+https://github.com/mahmoodlab/MADELEINE.git",
                 ),
                 _check_chief_repo_root(repo_root),
+                _check_flash_attn_gpu(),
             ]
         )
         if check_gated:

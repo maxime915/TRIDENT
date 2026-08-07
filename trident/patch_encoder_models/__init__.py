@@ -11,8 +11,10 @@ from trident.patch_encoder_models.load import (
     UNIInferenceEncoder,
     UNIv2InferenceEncoder,
     GigaPathInferenceEncoder,
+    GigaPathFlashInferenceEncoder,
     VirchowInferenceEncoder,
     Virchow2InferenceEncoder,
+    Virchow2ClsInferenceEncoder,
     HOptimus0InferenceEncoder,
     HOptimus1InferenceEncoder,
     H0MiniInferenceEncoder,
@@ -32,6 +34,9 @@ from trident.patch_encoder_models.load import (
     GenBioPathFMInferenceEncoder,
     Gemma4E4BInferenceEncoder,
     Gemma426BInferenceEncoder,
+    WaivFinetunedInferenceEncoder,
+    PhaetInferenceEncoder,
+    MascaretInferenceEncoder,
 )
 
 __all__ = [
@@ -47,8 +52,10 @@ __all__ = [
     "UNIInferenceEncoder",
     "UNIv2InferenceEncoder",
     "GigaPathInferenceEncoder",
+    "GigaPathFlashInferenceEncoder",
     "VirchowInferenceEncoder",
     "Virchow2InferenceEncoder",
+    "Virchow2ClsInferenceEncoder",
     "HOptimus0InferenceEncoder",
     "HOptimus1InferenceEncoder",
     "H0MiniInferenceEncoder",
@@ -68,4 +75,7 @@ __all__ = [
     "GenBioPathFMInferenceEncoder",
     "Gemma4E4BInferenceEncoder",
     "Gemma426BInferenceEncoder",
+    "WaivFinetunedInferenceEncoder",
+    "PhaetInferenceEncoder",
+    "MascaretInferenceEncoder",
 ]

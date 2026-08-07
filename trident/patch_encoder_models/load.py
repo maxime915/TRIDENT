@@ -18,10 +18,10 @@ This file contains 20+ pretrained patch encoders, all loadable via the encoder_f
 # `_resolve_target_img_size` for the validation rules.
 RESIZE_SUPPORTED_PATCH_ENCODERS = frozenset({
     # Category A: dynamic_img_size already enabled on the timm backbone.
-    "uni_v1", "uni_v2", "virchow", "virchow2",
+    "uni_v1", "uni_v2", "virchow", "virchow2", "virchow2-cls",
     "kaiko-vitb8", "kaiko-vitb16", "kaiko-vits8", "kaiko-vits16", "kaiko-vitl14",
     # Category B: dynamic_img_size enabled as part of this feature.
-    "gigapath", "hoptimus0", "hoptimus1", "gpfm", "lunit-vits8", "h0-mini",
+    "gigapath", "gigapath-flash", "hoptimus0", "hoptimus1", "gpfm", "lunit-vits8", "h0-mini",
 })
 
 
@@ -75,11 +75,15 @@ def encoder_factory(model_name: str, **kwargs) -> torch.nn.Module:
         - "resnet50"
         - "keep"
         - "gigapath"
+        - "gigapath-flash"
         - "virchow"
         - "virchow2"
+        - "virchow2-cls"
         - "hoptimus0"
         - "hoptimus1"
         - "h0-mini"
+        - "phaet"
+        - "mascaret"
         - "musk"
         - "openmidnight"
         - "gpfm"
@@ -911,7 +915,6 @@ class GigaPathInferenceEncoder(BasePatchEncoder):
         target_img_size=None,
     ):
         import timm
-        assert timm.__version__ == '0.9.16', f"Gigapath requires timm version 0.9.16, but found {timm.__version__}. Please install the correct version using `pip install timm==0.9.16`"
         from torchvision import transforms
 
         self.enc_name = 'gigapath'
@@ -971,6 +974,92 @@ class GigaPathInferenceEncoder(BasePatchEncoder):
         return model, eval_transform, precision
 
     
+class GigaPathFlashInferenceEncoder(BasePatchEncoder):
+
+    def __init__(self, **build_kwargs):
+        """
+        GigaPath-Flash initialization.
+        """
+        super().__init__(**build_kwargs)
+
+    def _build(
+        self,
+        target_img_size=None,
+    ):
+        import torch.nn as nn
+        from timm.layers import SwiGLUPacked
+        from timm.models.vision_transformer import VisionTransformer
+        from torchvision import transforms
+
+        self.enc_name = 'gigapath-flash'
+        weights_path = self._get_weights_path()
+        # GigaPath-Flash uses a DINOv2-small ViT-S/16 tile encoder.
+        img_size = _resolve_target_img_size(self.enc_name, target_img_size, 224, 16)
+
+        if not weights_path:
+            self.ensure_has_internet(self.enc_name)
+            try:
+                from huggingface_hub import hf_hub_download
+                weights_path = hf_hub_download(
+                    repo_id="prov-gigapath/prov-gigapath-flash",
+                    filename="pytorch_model.bin",
+                )
+            except:
+                traceback.print_exc()
+                raise Exception("Failed to download GigaPath-Flash model, make sure that you were granted access and that you correctly registered your token")
+
+        try:
+            # Built directly instead of via `timm.create_model`: the released architecture name
+            # (`gigapath_tile_enc_dinov2s`) is only registered once the prov-gigapath package is
+            # imported, which TRIDENT does not need for tile-level inference. These kwargs mirror
+            # `gigapath/tile_encoder.py` exactly and reproduce its outputs bit-for-bit.
+            model = VisionTransformer(
+                img_size=224,  # native grid; other resolutions are handled by dynamic_img_size
+                patch_size=16,
+                embed_dim=384,
+                depth=12,
+                num_heads=6,
+                mlp_ratio=2048 / 384.0,  # SwiGLU: fc1 -> 2048, fc2 <- 1024
+                mlp_layer=SwiGLUPacked,
+                act_layer=nn.SiLU,
+                init_values=1e-5,  # LayerScale
+                num_classes=0,
+                global_pool="token",
+                class_token=True,
+                reg_tokens=0,
+                dynamic_img_size=True,
+            )
+            model.load_state_dict(torch.load(weights_path, map_location="cpu"), strict=True)
+        except:
+            traceback.print_exc()
+            raise Exception(
+                f"Failed to create GigaPath-Flash model from checkpoint at '{weights_path}'. "
+                "You can download the required `pytorch_model.bin` from: https://huggingface.co/prov-gigapath/prov-gigapath-flash."
+            )
+
+        mean, std = get_constants('imagenet')
+        if target_img_size is None:
+            eval_transform = transforms.Compose(
+                [
+                    transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean, std),
+                ]
+            )
+        else:
+            eval_transform = transforms.Compose(
+                [
+                    transforms.Resize(img_size, interpolation=transforms.InterpolationMode.BICUBIC),
+                    transforms.CenterCrop(img_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean, std),
+                ]
+            )
+        precision = torch.float16
+        return model, eval_transform, precision
+
+
 class VirchowInferenceEncoder(BasePatchEncoder):
     import timm
     
@@ -1122,6 +1211,25 @@ class Virchow2InferenceEncoder(BasePatchEncoder):
         return embedding
 
 
+class Virchow2ClsInferenceEncoder(Virchow2InferenceEncoder):
+    """
+    Virchow2 returning the class token only (1280-dim) instead of the default class+mean
+    concatenation (2560-dim). Registered under its own name because PRISM2 consumes class-token-only
+    Virchow2 features, and `slide_to_patch_encoder_name` pairs a slide encoder with a patch encoder
+    by name alone -- the two feature flavors must therefore land in separate `features_*` folders.
+    """
+
+    def __init__(self, **build_kwargs):
+        super().__init__(**build_kwargs)
+
+    def _build(self, target_img_size=None):
+        # `super()._build` resolves weights under the 'virchow2' name, so a local checkpoint set for
+        # Virchow2 is reused here -- the weights are identical, only the pooling differs.
+        model, eval_transform, precision = super()._build(return_cls=True, target_img_size=target_img_size)
+        self.enc_name = 'virchow2-cls'
+        return model, eval_transform, precision
+
+
 class HOptimus0InferenceEncoder(BasePatchEncoder):
 
     def __init__(self, **build_kwargs):
@@ -1135,7 +1243,6 @@ class HOptimus0InferenceEncoder(BasePatchEncoder):
         target_img_size=None,
     ):
         import timm
-        assert timm.__version__ == '0.9.16', f"H-Optimus requires timm version 0.9.16, but found {timm.__version__}. Please install the correct version using `pip install timm==0.9.16`"
         from torchvision import transforms
 
         self.enc_name = 'hoptimus0'
@@ -1195,7 +1302,6 @@ class HOptimus1InferenceEncoder(BasePatchEncoder):
         **kwargs
     ):
         import timm
-        assert timm.__version__ == '0.9.16', f"H-Optimus requires timm version 0.9.16, but found {timm.__version__}. Please install the correct version using `pip install timm==0.9.16`"
         from torchvision import transforms
 
         self.enc_name = 'hoptimus1'
@@ -1385,6 +1491,111 @@ class Midnight12kInferenceEncoder(BasePatchEncoder):
             raise ValueError(
                 f"expected return_type to be one of 'cls_token' or 'cls+mean', but got '{self.return_type}'"
             )
+
+
+class WaivFinetunedInferenceEncoder(BasePatchEncoder):
+    """
+    Robustness-fine-tuned pathology encoder from Waiv (base class). Subclassed per variant below.
+
+    Both checkpoints ship as a custom `finetuned_encoder` HuggingFace architecture (hence
+    `trust_remote_code=True`) wrapping the DINOv2 backbone they fine-tune. Their parameter counts
+    match those base models exactly, so the architecture, hidden size and expected preprocessing
+    are unchanged -- only the weights differ. See https://arxiv.org/abs/2607.22861.
+    """
+    ENC_NAME = None            # TRIDENT encoder name
+    HF_REPO = None             # HuggingFace repo id (gated)
+    BASE_ENCODER = None        # TRIDENT name of the encoder this checkpoint fine-tunes
+    NORM = 'imagenet'          # normalization constants, inherited from the base model
+    PRECISION = torch.float32
+
+    def __init__(self, **build_kwargs):
+        super().__init__(**build_kwargs)
+
+    def _build(self, return_type: Literal["cls_token", "cls+mean"] = "cls_token"):
+        from transformers import AutoModel
+        from torchvision import transforms
+
+        self.enc_name = self.ENC_NAME
+        weights_path = self._get_weights_path()
+
+        if weights_path:
+            try:
+                model_dir = weights_path if os.path.isdir(weights_path) else os.path.dirname(weights_path)
+                model = AutoModel.from_pretrained(model_dir, trust_remote_code=True)
+            except:
+                traceback.print_exc()
+                raise Exception(
+                    f"Failed to create {self.ENC_NAME} model from local checkpoint at '{weights_path}'. "
+                    "You can download the required `model.safetensors`, `config.json` and "
+                    f"`modeling_finetuned_encoder.py` from: https://huggingface.co/{self.HF_REPO}."
+                )
+        else:
+            self.ensure_has_internet(self.ENC_NAME)
+            try:
+                model = AutoModel.from_pretrained(self.HF_REPO, trust_remote_code=True)
+            except:
+                traceback.print_exc()
+                raise Exception(
+                    f"Failed to download {self.ENC_NAME} model, make sure that you were granted access to "
+                    f"https://huggingface.co/{self.HF_REPO} and that you correctly registered your token"
+                )
+
+        # Neither repo ships a `preprocessor_config.json`, so preprocessing is inherited from the
+        # base model (same input size and normalization constants).
+        mean, std = get_constants(self.NORM)
+        eval_transform = transforms.Compose(
+            [
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std),
+            ]
+        )
+
+        self.return_type = return_type
+        return model, eval_transform, self.PRECISION
+
+    def forward(self, x):
+        out = self.model(x)
+        # The custom wrapper is expected to expose token embeddings as `last_hidden_state` (as both
+        # DINOv2 backbones do); fall back to a bare tensor if it returns one directly.
+        out = getattr(out, 'last_hidden_state', out)
+        # Raw CLS, as everywhere else in TRIDENT; the model cards' L2-normalised `pooler_output` is
+        # a per-patch rescaling callers can still apply, but cannot undo once saved.
+        cls_token = out[:, 0, :]
+        if self.return_type == "cls_token":
+            return cls_token
+        elif self.return_type == "cls+mean":
+            patch_embeddings = out[:, 1:, :]
+            return torch.cat([cls_token, patch_embeddings.mean(1)], dim=-1)
+        else:
+            raise ValueError(
+                f"expected return_type to be one of 'cls_token' or 'cls+mean', but got '{self.return_type}'"
+            )
+
+
+class PhaetInferenceEncoder(WaivFinetunedInferenceEncoder):
+    """Phaet: robustness-fine-tuned Phikon-v2 (DINOv2 ViT-L, 1024-dim)."""
+    ENC_NAME = 'phaet'
+    HF_REPO = 'wearewaiv/phaet'
+    BASE_ENCODER = 'phikon_v2'
+    NORM = 'imagenet'
+    PRECISION = torch.float32
+
+    def __init__(self, **build_kwargs):
+        super().__init__(**build_kwargs)
+
+
+class MascaretInferenceEncoder(WaivFinetunedInferenceEncoder):
+    """Mascaret: robustness-fine-tuned Midnight-12k (DINOv2 ViT-g, 1536-dim)."""
+    ENC_NAME = 'mascaret'
+    HF_REPO = 'wearewaiv/mascaret'
+    BASE_ENCODER = 'midnight12k'
+    NORM = 'kaiko'
+    PRECISION = torch.float16
+
+    def __init__(self, **build_kwargs):
+        super().__init__(**build_kwargs)
 
 
 class H0MiniInferenceEncoder(BasePatchEncoder):
@@ -1651,6 +1862,25 @@ class Gemma4InferenceEncoder(BasePatchEncoder):
 
     def _build(self):
         from PIL import Image
+        from packaging.version import Version
+        import transformers
+
+        # The Gemma 4 classes only exist in transformers >= 5 (4.x stops at Gemma 3n). Check the
+        # version up front so the message can spell out the cost of upgrading, rather than letting a
+        # bare ImportError surface.
+        assert Version(transformers.__version__) >= Version("5.0"), (
+            f"Gemma 4 requires transformers>=5.0, but found {transformers.__version__}. "
+            "No 4.x release provides `Gemma4Config`. Install it with "
+            "`pip install 'transformers>=5.0'`.\n"
+            "WARNING: transformers 5 is outside the range TRIDENT declares (>=4.51,<5) and will "
+            "break other encoders in the same environment:\n"
+            "  - `hibou_l`: its Hub-side remote code imports `transformers.onnx`, removed in v5.\n"
+            "  - `titan`: known to need an `all_tied_weights_keys` workaround on v5.\n"
+            "  - any environment whose `torchaudio` does not match its `torch`: v5 imports "
+            "torchaudio whenever it is installed, so a mismatched build breaks *every* model load "
+            "(repair or uninstall torchaudio).\n"
+            "Prefer a separate environment for Gemma 4."
+        )
 
         try:
             from transformers import (
@@ -1660,8 +1890,9 @@ class Gemma4InferenceEncoder(BasePatchEncoder):
             )
         except ImportError:
             raise ImportError(
-                "Gemma 4 requires transformers>=5.0. "
-                "Install with: pip install 'transformers>=5.0'"
+                f"transformers {transformers.__version__} does not expose the Gemma 4 classes "
+                "(`Gemma4Config`, `Gemma4VisionModel`, `Gemma4ImageProcessor`). Install a release "
+                "that provides them, e.g. `pip install 'transformers>=5.0'`."
             )
 
         self.enc_name = f"gemma4-{self.VARIANT}"
@@ -1838,8 +2069,10 @@ encoder_registry = {
     "resnet50": ResNet50InferenceEncoder,
     "keep": KeepInferenceEncoder,
     "gigapath": GigaPathInferenceEncoder,
+    "gigapath-flash": GigaPathFlashInferenceEncoder,
     "virchow": VirchowInferenceEncoder,
     "virchow2": Virchow2InferenceEncoder,
+    "virchow2-cls": Virchow2ClsInferenceEncoder,
     "hoptimus0": HOptimus0InferenceEncoder,
     "hoptimus1": HOptimus1InferenceEncoder,
     "h0-mini": H0MiniInferenceEncoder,
@@ -1854,6 +2087,8 @@ encoder_registry = {
     "kaiko-vitl14": KaikoL14InferenceEncoder,
     "lunit-vits8": LunitS8InferenceEncoder,
     "midnight12k": Midnight12kInferenceEncoder,
+    "phaet": PhaetInferenceEncoder,
+    "mascaret": MascaretInferenceEncoder,
     "genbio-pathfm": GenBioPathFMInferenceEncoder,
     "gemma4-e4b": Gemma4E4BInferenceEncoder,
     "gemma4-26b": Gemma426BInferenceEncoder,

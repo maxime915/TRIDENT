@@ -45,6 +45,14 @@ class TestSlideEncoders(unittest.TestCase):
         }
         self._test_encoder_forward(PRISMSlideEncoder(), sample_batch, torch.float16)
 
+    def test_prism2_encoder_initialization(self):
+        # PRISM2 consumes class-token-only Virchow2 features (1280-dim).
+        sample_batch = {
+            'features': torch.randn(1, 100, 1280),
+            'coords': torch.randn(1, 100, 2),
+        }
+        self._test_encoder_forward(PRISM2SlideEncoder(), sample_batch, torch.bfloat16)
+
     def test_chief_encoder_initialization(self):
         sample_batch = {
             'features': torch.randn(1, 100, 768),
@@ -75,6 +83,14 @@ class TestSlideEncoders(unittest.TestCase):
             'attributes': {'patch_size_level0': 224}
         }
         self._test_encoder_forward(GigaPathSlideEncoder(), sample_batch, torch.float16)
+
+    def test_gigapath_flash_encoder_initialization(self):
+        sample_batch = {
+            'features': torch.randn(1, 100, 384),
+            'coords': torch.randn(1, 100, 2),
+            'attributes': {'patch_size_level0': 224}
+        }
+        self._test_encoder_forward(GigaPathFlashSlideEncoder(), sample_batch, torch.float16)
 
     def test_slide_encoder_factory_with_valid_names(self):
         print("\033[95m" + "Testing Slide Encoder Factory with valid names" + "\033[0m")

@@ -8,7 +8,7 @@ For the workflow and decisions, see [SKILL.md](SKILL.md).
 - Entry points
 - `run_batch_of_slides.py` flags
 - `run_single_slide.py` flags
-- Patch encoders (24) — embedding dim + required patch_size/mag
+- Patch encoders (33) — embedding dim + required patch_size/mag
 - Slide encoders — required patch encoder + patch_size/mag
 - Segmenters & artifact removal
 - WSI readers & formats
@@ -111,19 +111,23 @@ column is **required** for correct features — copy it verbatim.
 | `conch_v15` (default) | 768 | `--patch_size 512 --mag 20` |
 | `virchow` | 2560 | `--patch_size 224 --mag 20` |
 | `virchow2` | 2560 | `--patch_size 224 --mag 20` |
+| `virchow2-cls` | 1280 | `--patch_size 224 --mag 20` |
 | `phikon` | 768 | `--patch_size 224 --mag 20` |
 | `phikon_v2` | 1024 | `--patch_size 224 --mag 20` |
 | `keep` | 768 | `--patch_size 256 --mag 20` |
 | `gigapath` | 1536 | `--patch_size 256 --mag 20` |
+| `gigapath-flash` | 384 | `--patch_size 256 --mag 20` |
 | `hoptimus0` | 1536 | `--patch_size 224 --mag 20` |
 | `hoptimus1` | 1536 | `--patch_size 224 --mag 20` |
 | `h0-mini` | 768/1536 | `--patch_size 224 --mag 20` |
 | `musk` | 1024 | `--patch_size 384 --mag 20` |
 | `midnight12k` | 3072 | `--patch_size 224 --mag 20` |
+| `phaet` | 1024 | `--patch_size 224 --mag 20` |
+| `mascaret` | 1536/3072 | `--patch_size 224 --mag 20` |
 | `openmidnight` | 1536 | `--patch_size 224 --mag 20` |
 | `gpfm` | 1024 | `--patch_size 224 --mag 20` |
 | `genbio-pathfm` | 4608 | `--patch_size 224 --mag 20` |
-| `gemma4-e4b` / `gemma4-26b` | 768/1152 | `--patch_size 224 --mag 20` |
+| `gemma4-e4b` / `gemma4-26b` | 768/1152 | `--patch_size 224 --mag 20` — needs `transformers>=5`, excludes `hibou_l` |
 | `kaiko-vits8/vits16/vitb8/vitb16/vitl14` | 384/768/1024 | `--patch_size 256 --mag 20` |
 | `lunit-vits8` | 384 | `--patch_size 224 --mag 20` |
 | `hibou_l` | 1024 | `--patch_size 224 --mag 20` |
@@ -139,13 +143,16 @@ pass its required patch_size/mag.
 |---|---|---|
 | `titan` | conch_v15 | `--patch_size 512 --mag 20` |
 | `prism` | virchow | `--patch_size 224 --mag 20` |
+| `prism2` | virchow2-cls | `--patch_size 224 --mag 20` — 2560-d base (perceiver) embedding |
 | `chief` | ctranspath | `--patch_size 256 --mag 10` |
 | `gigapath` | gigapath | `--patch_size 256 --mag 20` |
+| `gigapath-flash` | gigapath-flash | `--patch_size 256 --mag 20` |
 | `madeleine` | conch_v1 | `--patch_size 256 --mag 10` |
 | `feather` | conch_v15 | `--patch_size 512 --mag 20` |
 | `feather_uni_v2` | uni_v2 | `--patch_size 256 --mag 20` |
 | `care` | conch_v15 | `--patch_size 512 --mag 20` |
 | `threads` | conch_v15 | `--patch_size 512 --mag 20` *(coming soon)* |
+| `abmil` | any | **Python API only** — untrained aggregator; needs `pretrained=False` + `input_feature_dim`/`n_heads`/`head_dim`/`dropout`/`gated`. `--slide_encoder abmil` raises TypeError. |
 
 ## Segmenters & artifact removal
 
@@ -301,19 +308,26 @@ trident-doctor --profile base
 trident-doctor --profile patch-encoders --check-gated
 ```
 
-Pin `timm==0.9.16`. Gated HF encoders need access approval + `huggingface-cli login`.
+Gated HF encoders need access approval + `huggingface-cli login`.
+Library versions:
+- Python `>=3.10,<3.13`, `timm>=0.9.16,<2`, `transformers>=4.51,<5` (v5 drops `transformers.onnx`,
+  used by Hibou-L). Exception: `gemma4-e4b`/`gemma4-26b` need `transformers>=5`, so they are
+  mutually exclusive with `hibou_l` and `titan` — one per environment.
+- `flash_attn>=2.7.3` — GigaPath/GigaPath-Flash/PRISM2 slide encoders only. Versions <2.7.3 have no
+  Blackwell (sm_100/sm_120) kernels. PyPI has only an sdist — prefer a prebuilt wheel matching
+  torch/CUDA/Python/ABI from https://github.com/Dao-AILab/flash-attention/releases.
+
 Some models need manual setup (e.g. local CHIEF path in
 `trident/slide_encoder_models/local_ckpts.json`).
 
-Compatibility notes (observed):
-- Python 3.10/3.11 is recommended, but runs succeed on newer (e.g. 3.13) as long as `timm==0.9.16`.
+Compatibility notes:
 - Some **slide encoders load HF remote code that breaks on `transformers` 5.x** — e.g. TITAN fails
   with `AttributeError: 'Titan' object has no attribute 'all_tied_weights_keys'`. If a slide
   encoder errors on load (not a gating/timm error), pin an older `transformers` (4.x), or — in a
   read-only/shared env — monkeypatch before load:
   `from transformers.modeling_utils import PreTrainedModel; PreTrainedModel.all_tied_weights_keys = {}`
-  (the batch CLI spawns workers, so put it in a `sitecustomize.py` on `PYTHONPATH`). Note PRISM also
-  pulls a heavy, version-pinned dependency set (`transformers==4.42.4`, `environs`, `sacremoses`).
+  (the batch CLI spawns workers, so put it in a `sitecustomize.py` on `PYTHONPATH`).
+- PRISM v1 additionally needs `environs==11.0.0` and `sacremoses==0.1.1`.
 - If the `trident-doctor` console script isn't on PATH (depends on the install), preflight with
   `python -c "import trident; from trident.patch_encoder_models import encoder_factory; encoder_factory('uni_v1')"`
   to confirm imports + gated-model access.

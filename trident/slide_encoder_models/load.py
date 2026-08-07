@@ -38,6 +38,58 @@ def encoder_factory(model_name: str, pretrained: bool = True, freeze: bool = Tru
             raise ValueError(f"Unknown encoder name {model_name}")
 
 
+# flash-attn only ships kernels for the SM architectures it was compiled for. Releases before 2.7.3
+# stop at sm_90, so Blackwell (sm_100 / sm_120) fails at the first attention call with
+# "FlashAttention only supports Ampere GPUs or newer" no matter what a given model's API floor is.
+BLACKWELL_MIN_FLASH_ATTN = '2.7.3'
+
+
+def _require_flash_attn(model_name: str, minimum: str) -> None:
+    """
+    Check the installed flash-attn against a model's API floor and against the current GPU.
+
+    Parameters:
+        model_name (str):
+            Encoder name, used in error messages.
+        minimum (str):
+            Lowest flash-attn version whose Python API this model is known to work with.
+
+    Raises:
+        Exception: If flash-attn is missing, older than `minimum`, or too old for this GPU.
+    """
+    from packaging.version import Version
+
+    try:
+        import flash_attn
+    except:
+        traceback.print_exc()
+        raise Exception(
+            f"{model_name} requires flash_attn >= {minimum}. Install it with "
+            f"`pip install 'flash_attn>={minimum}'`."
+        )
+
+    installed = Version(flash_attn.__version__)
+    if installed < Version(minimum):
+        raise Exception(
+            f"{model_name} requires flash_attn >= {minimum}, but found {flash_attn.__version__}. "
+            f"Upgrade with `pip install 'flash_attn>={minimum}'`."
+        )
+
+    if torch.cuda.is_available():
+        major, minor = torch.cuda.get_device_capability()
+        if major >= 10 and installed < Version(BLACKWELL_MIN_FLASH_ATTN):
+            raise Exception(
+                f"flash_attn {flash_attn.__version__} has no kernels for this GPU "
+                f"(sm_{major}{minor}); releases before {BLACKWELL_MIN_FLASH_ATTN} only compile up to "
+                f"sm_90. Install flash_attn >= {BLACKWELL_MIN_FLASH_ATTN}, which is API-compatible "
+                f"with {model_name}. PyPI ships only an sdist, so prefer a prebuilt wheel matching "
+                "your torch/CUDA/Python from "
+                "https://github.com/Dao-AILab/flash-attention/releases, or build from source: "
+                f"`FLASH_ATTN_CUDA_ARCHS={major}{minor} pip install "
+                f"--no-build-isolation flash-attn>={BLACKWELL_MIN_FLASH_ATTN}` (needs nvcc >= 12.8)."
+            )
+
+
 # Map from slide encoder to required patch encoder
 # Used in Processor.py to load the correct patch encoder for a given slide encoder
 slide_to_patch_encoder_name = {
@@ -45,8 +97,10 @@ slide_to_patch_encoder_name = {
     'titan': 'conch_v15',
     'tcga': 'conch_v15',
     'prism': 'virchow',
+    'prism2': 'virchow2-cls',
     'chief': 'ctranspath',
     'gigapath': 'gigapath',
+    'gigapath-flash': 'gigapath-flash',
     'madeleine': 'conch_v1',
     'feather': 'conch_v15',
     'feather_uni_v2': 'uni_v2',
@@ -208,7 +262,7 @@ class PRISMSlideEncoder(BaseSlideEncoder):
         except:
             traceback.print_exc()
             raise Exception(
-                "Please run `pip install environs==11.0.0 transformers==4.42.4 sacremoses==0.1.1` "
+                "Please run `pip install environs==11.0.0 'transformers>=4.51,<5' sacremoses==0.1.1` "
                 "and ensure Python version is 3.10 or above."
             )
 
@@ -228,6 +282,65 @@ class PRISMSlideEncoder(BaseSlideEncoder):
         z = z['image_embedding'] 
         return z
     
+
+class PRISM2SlideEncoder(BaseSlideEncoder):
+
+    def __init__(self, **build_kwargs):
+        """
+        PRISM2 initialization.
+        """
+        super().__init__(**build_kwargs)
+
+    def _build(self, pretrained=True):
+
+        self.enc_name = 'prism2'
+
+        from packaging.version import Version
+
+        try:
+            import einops  # noqa: F401  (required by the remote modeling code)
+            import transformers
+            from transformers import AutoModel, AutoConfig, AutoProcessor
+            assert Version(transformers.__version__) >= Version('4.51')
+        except:
+            traceback.print_exc()
+            raise Exception(
+                "PRISM2 requires einops and transformers >= 4.51. Install with "
+                "`pip install einops 'transformers>=4.51,<5'`."
+            )
+
+        # PRISM2's Phi-3 decoder is loaded with FlashAttention-2; the model card asks for >= 2.6.3.
+        _require_flash_attn('PRISM2', '2.6.3')
+
+        if pretrained:
+            model = AutoModel.from_pretrained('paige-ai/Prism2', trust_remote_code=True, torch_dtype='auto')
+        else:
+            model = AutoModel.from_config(
+                AutoConfig.from_pretrained('paige-ai/Prism2', trust_remote_code=True),
+                trust_remote_code=True,
+            )
+        # We only expose the base embedding, which is pure perceiver pooling. Drop the text decoder
+        # rather than carry 85% of the parameters unused, as done for PRISM v1.
+        model.text_decoder = None
+        # Packs the variable-length per-slide tile sequences into a padded batch + attention mask.
+        self.processor = AutoProcessor.from_pretrained('paige-ai/Prism2', trust_remote_code=True)
+
+        precision = torch.bfloat16
+        embedding_dim = 2560
+        return model, precision, embedding_dim
+
+    def forward(self, batch, device='cuda'):
+        # PRISM2 consumes class-token-only Virchow2 features: (batch_size, tile_seq_len, 1280).
+        features = batch['features'].to(device)
+        inputs = self.processor(tile_embeddings=list(features)).to(device)
+
+        # Autocast explicitly rather than relying on the caller: PRISM2 is documented to run under
+        # bfloat16, and TRIDENT's slide-feature path opens an autocast context without a dtype
+        # (which defaults to float16 on CUDA). A nested context takes precedence.
+        with torch.autocast(device_type=torch.device(device).type, dtype=torch.bfloat16):
+            z = self.model.get_base_embedding(**inputs)   # (B, 2560)
+        return z
+
 
 class CHIEFSlideEncoder(BaseSlideEncoder):
 
@@ -309,6 +422,12 @@ class CHIEFSlideEncoder(BaseSlideEncoder):
     
 
 class GigaPathSlideEncoder(BaseSlideEncoder):
+    """GigaPath LongNet slide encoder (base class). Subclassed per variant (see below)."""
+    ENC_NAME = 'gigapath'
+    SLIDE_ENC_ARCH = 'gigapath_slide_enc12l768d'
+    IN_CHANS = 1536       # dim of the paired tile encoder's embeddings
+    EMBED_DIM = 768       # dim of the slide embedding
+    HF_REPO = 'prov-gigapath/prov-gigapath'
 
     def __init__(self, **build_kwargs):
         """
@@ -318,39 +437,61 @@ class GigaPathSlideEncoder(BaseSlideEncoder):
 
     def _build(self, pretrained=True):
 
-        self.enc_name = 'gigapath'
+        self.enc_name = self.ENC_NAME
 
         try:
             from gigapath.slide_encoder import create_model
         except:
             traceback.print_exc()
             raise Exception("Please install fairscale and gigapath using `pip install fairscale git+https://github.com/prov-gigapath/prov-gigapath.git`.")
-        
-        # Make sure flash_attn is correct version
-        try:
-            import flash_attn; assert flash_attn.__version__ == '2.5.8'
-        except:
-            traceback.print_exc()
-            raise Exception("Please install flash_attn version 2.5.8 using `pip install flash_attn==2.5.8`.")
-        
+
+        # Importing gigapath.slide_encoder registers the LongNet architectures with timm. Older
+        # gigapath releases predate the GigaPath-Flash variant, so check before building.
+        import timm
+        if not timm.is_model(self.SLIDE_ENC_ARCH):
+            raise Exception(
+                f"Slide encoder architecture '{self.SLIDE_ENC_ARCH}' is not registered by your gigapath "
+                "install. Upgrade it with `pip install --upgrade --force-reinstall --no-deps "
+                "git+https://github.com/prov-gigapath/prov-gigapath.git`."
+            )
+
+        # LongNet only calls `flash_attn_func(..., return_attn_probs=True)`, whose signature and
+        # 3-tuple return are unchanged from 2.5.8 through at least 2.8.3, so no upper bound applies.
+        _require_flash_attn(self.enc_name, '2.5.8')
+
+        weights_path = ""
         if pretrained:
             weights_path = get_weights_path('slide', self.enc_name)
-            if weights_path:
-                model = create_model(weights_path, "gigapath_slide_enc12l768d", 1536, global_pool=True)
-            else:
-                model = create_model("hf_hub:prov-gigapath/prov-gigapath", "gigapath_slide_enc12l768d", 1536, global_pool=True)
-        else:
-            model = create_model("", "gigapath_slide_enc12l768d", 1536, global_pool=True)
-        
-        
+            if not weights_path:
+                # Download explicitly rather than passing `hf_hub:...` to `create_model`, which
+                # force-downloads every variant to the same `~/.cache/slide_encoder.pth`.
+                from huggingface_hub import hf_hub_download
+                weights_path = hf_hub_download(repo_id=self.HF_REPO, filename="slide_encoder.pth")
+
+        model = create_model(weights_path, self.SLIDE_ENC_ARCH, self.IN_CHANS, global_pool=True)
+
         precision = torch.float16
-        embedding_dim = 768
-        return model, precision, embedding_dim
+        return model, precision, self.EMBED_DIM
 
     def forward(self, batch, device='cuda'):
         self.model.tile_size = batch['attributes']['patch_size_level0']
         z = self.model(batch['features'].to(device), batch['coords'].to(device), all_layer_embed=True)[11]
         return z
+
+
+class GigaPathFlashSlideEncoder(GigaPathSlideEncoder):
+    """GigaPath-Flash LongNet slide encoder (12 layers, 384-dim), paired with the ViT-S/16 tile encoder."""
+    ENC_NAME = 'gigapath-flash'
+    SLIDE_ENC_ARCH = 'gigapath_slide_enc12l384d'
+    IN_CHANS = 384
+    EMBED_DIM = 384
+    HF_REPO = 'prov-gigapath/prov-gigapath-flash'
+
+    def __init__(self, **build_kwargs):
+        """
+        GigaPath-Flash initialization.
+        """
+        super().__init__(**build_kwargs)
 
 
 class MadeleineSlideEncoder(BaseSlideEncoder):
@@ -565,14 +706,22 @@ class MeanSlideEncoder(BaseSlideEncoder):
             embedding_dim = 1024
         elif model_name == 'mean-gigapath':
             embedding_dim = 1536
+        elif model_name == 'mean-gigapath-flash':
+            embedding_dim = 384
         elif model_name == 'mean-virchow':
             embedding_dim = 2560
         elif model_name == 'mean-virchow2':
             embedding_dim = 2560
+        elif model_name == 'mean-virchow2-cls':
+            embedding_dim = 1280
         elif model_name == 'mean-hoptimus0':
             embedding_dim = 1536
         elif model_name == 'mean-phikon_v2':
             embedding_dim = 1024
+        elif model_name == 'mean-phaet':
+            embedding_dim = 1024
+        elif model_name == 'mean-mascaret':
+            embedding_dim = 1536
         elif model_name == 'mean-musk':
             embedding_dim = 1024
         elif model_name == 'mean-hibou_l':
@@ -605,8 +754,10 @@ encoder_registry = {
     'threads': ThreadsSlideEncoder,
     'titan': TitanSlideEncoder,
     'prism': PRISMSlideEncoder,
+    'prism2': PRISM2SlideEncoder,
     'chief': CHIEFSlideEncoder,
     'gigapath': GigaPathSlideEncoder,
+    'gigapath-flash': GigaPathFlashSlideEncoder,
     'madeleine': MadeleineSlideEncoder,
     'feather': FeatherSlideEncoder,
     'feather_uni_v2': FeatherUni2SlideEncoder,
@@ -622,10 +773,14 @@ encoder_registry = {
     'mean-phikon': MeanSlideEncoder,
     'mean-resnet50': MeanSlideEncoder,
     'mean-gigapath': MeanSlideEncoder,
+    'mean-gigapath-flash': MeanSlideEncoder,
     'mean-virchow': MeanSlideEncoder,
     'mean-virchow2': MeanSlideEncoder,
+    'mean-virchow2-cls': MeanSlideEncoder,
     'mean-hoptimus0': MeanSlideEncoder,
     'mean-phikon_v2': MeanSlideEncoder,
+    'mean-phaet': MeanSlideEncoder,
+    'mean-mascaret': MeanSlideEncoder,
     'mean-musk': MeanSlideEncoder,
     'mean-hibou_l': MeanSlideEncoder,
     'mean-kaiko-vit8s': MeanSlideEncoder,
